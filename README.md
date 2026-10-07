@@ -1,368 +1,612 @@
-# Bulk Certificate Generator
+# Bulk Certificate Generator 🎓⚡
 
-Backend API for bulk certificate generation.
+A high-performance, asynchronous RESTful API for generating personalized PDF certificates in bulk. Built with **FastAPI**, **PostgreSQL**, **Celery**, **Redis**, and **ReportLab**, this service is engineered for reliability, failure isolation, idempotency, and concurrent processing.
 
-## Stack
+---
 
-- FastAPI
-- PostgreSQL
-- SQLAlchemy
-- Redis
-- Celery
-- ReportLab
-- Pytest
-- Docker
+## 📑 Table of Contents
 
-## Phase 1
+- [Features](#-features)
+- [System Architecture](#-system-architecture)
+- [Tech Stack](#-tech-stack)
+- [Prerequisites](#-prerequisites)
+- [Project Setup](#-project-setup)
+  - [Option A: Docker Compose (Recommended)](#option-a-docker-compose-recommended)
+  - [Option B: Local Environment Setup](#option-b-local-environment-setup)
+- [Running the Application](#-running-the-application)
+- [Database Migrations](#-database-migrations)
+- [Running Tests](#-running-tests)
+- [How to Submit a Certificate Generation Request](#-how-to-submit-a-certificate-generation-request)
+- [How to Retrieve Generated Certificates](#-how-to-retrieve-generated-certificates)
+- [How to Retry Failed Certificates](#-how-to-retry-failed-certificates)
+- [Health & Readiness Probes](#-health--readiness-probes)
+- [Important Implementation & Design Decisions](#-important-implementation--design-decisions)
+- [Project Structure](#-project-structure)
+- [Environment Configuration Reference](#-environment-configuration-reference)
 
-This initial version contains:
+---
 
-- FastAPI application
-- PostgreSQL service
-- Redis service
-- Celery worker service
-- Application configuration
-- Database engine/session foundation
-- `/health` endpoint
-- Initial test
+## 🌟 Features
 
-## Run with Docker
+- **Bulk Certificate Generation**: Submit up to 10,000 recipients in a single request with automated background rendering.
+- **Asynchronous Worker Queue**: Decoupled HTTP API and Celery workers backed by Redis broker to prevent request timeouts.
+- **Per-Certificate Failure Isolation**: An error during one recipient's PDF generation does not abort or corrupt the rest of the batch.
+- **Strict Idempotency**: Optional `Idempotency-Key` header prevents duplicate job submission and duplicate billing/processing during network retries.
+- **Atomic Worker Safety**: Conditional SQL claiming (`PENDING` $\rightarrow$ `PROCESSING`) guarantees that duplicate Celery deliveries or multiple workers never generate duplicate PDFs.
+- **Targeted Retries**: Retry individual failed certificates without re-generating the entire batch.
+- **Live Progress & Tracking**: Real-time batch progress metrics (processed, successful, failed, percentage).
+- **Fast & Isolated Test Suite**: Pytest suite using an in-memory SQLite database (`StaticPool`) that runs in seconds without external infrastructure.
+- **Containerized**: Full Docker and Docker Compose environment ready for development and deployment.
 
-```bash
-docker compose up --build
+---
+
+## 🏗 System Architecture
+
+```text
+[ Client / Frontend ]
+         |
+         |  1. POST /api/v1/jobs (with Idempotency-Key)
+         v
++------------------+         2. Save Job & Recipients (Transaction)
+|   FastAPI App    | ---------------------------------------------> [ PostgreSQL ]
+|    (API Server)  | <---------------------------------------------
++------------------+
+         |
+         |  3. Enqueue Job ID (Celery Task)
+         v
++------------------+
+|   Redis Broker   |
++------------------+
+         |
+         |  4. Consume Job & Claim Certificate Atomically
+         v
++------------------+         5. Fetch recipient details
+|  Celery Workers  | <--------------------------------------------> [ PostgreSQL ]
+| (ReportLab PDFs) |         6. Update status & counters
++------------------+
+         |
+         |  7. Write generated PDF file
+         v
++-------------------------------------------------------+
+| Local Storage (storage/certificates/<job_id>/<id>.pdf)|
++-------------------------------------------------------+
 ```
 
-API docs:
+---
 
-http://localhost:8000/docs
+## 🛠 Tech Stack
 
-Health:
+| Component | Technology | Description |
+|---|---|---|
+| **API Framework** | [FastAPI](https://fastapi.tiangolo.com/) | Modern, high-speed ASGI web framework |
+| **ASGI Server** | [Uvicorn](https://www.uvicorn.org/) | Lightning-fast ASGI server |
+| **Relational Database** | [PostgreSQL 16](https://www.postgresql.org/) | ACID-compliant relational storage with UUID support |
+| **ORM & Migrations** | [SQLAlchemy 2.0](https://www.sqlalchemy.org/) & [Alembic](https://alembic.sqlalchemy.org/) | Type-safe ORM & version-controlled database schema migrations |
+| **Database Driver** | [psycopg 3 (binary)](https://www.psycopg.org/) | Next-generation PostgreSQL driver for Python |
+| **Task Queue & Broker** | [Celery 5](https://docs.celeryq.dev/) & [Redis 7](https://redis.io/) | Distributed asynchronous task execution and message broker |
+| **PDF Generation Engine** | [ReportLab](https://www.reportlab.com/) | High-performance programmatic PDF document creation |
+| **Data Validation** | [Pydantic v2](https://docs.pydantic.dev/) & [email-validator](https://github.com/JoshData/python-email-validator) | Robust schema parsing, trimming, and email validation |
+| **Testing** | [Pytest](https://pytest.org/) & [HTTPX / TestClient](https://www.python-httpx.org/) | Automated unit and integration testing |
+| **Containerization** | [Docker](https://www.docker.com/) & Docker Compose | Multi-container orchestration |
 
-http://localhost:8000/health
+---
 
-## Run locally
+## 📋 Prerequisites
 
-Create a virtual environment:
+Before running the application, ensure you have the following installed:
+
+- **Docker & Docker Compose** (for containerized execution)
+  *— OR —*
+- **Python 3.10+ / 3.12**
+- **PostgreSQL 14+** (running locally or in a container)
+- **Redis 6+** (running locally or in a container)
+
+---
+
+## 🚀 Project Setup
+
+### Option A: Docker Compose (Recommended)
+
+Docker Compose starts PostgreSQL, Redis, the FastAPI application, and the Celery worker in one step.
+
+1. **Clone the repository**:
+   ```bash
+   git clone <repository-url>
+   cd bulk-certificate-generator
+   ```
+
+2. **Configure environment variables**:
+   ```bash
+   cp .env.example .env
+   ```
+
+3. **Build and start the containers**:
+   ```bash
+   docker compose up --build -d
+   ```
+
+4. **Apply database migrations**:
+   ```bash
+   docker compose run --rm api alembic upgrade head
+   ```
+
+5. **Verify services are running**:
+   ```bash
+   docker compose ps
+   ```
+
+---
+
+### Option B: Local Environment Setup
+
+If you prefer to run services directly on your host machine:
+
+1. **Create and activate a virtual environment**:
+   - **Linux / macOS**:
+     ```bash
+     python3 -m venv .venv
+     source .venv/bin/activate
+     ```
+   - **Windows (PowerShell)**:
+     ```powershell
+     python -m venv .venv
+     .\.venv\Scripts\Activate.ps1
+     ```
+
+2. **Install project dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Configure the environment file**:
+   Create a `.env` file from `.env.example`:
+   ```env
+   DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/certificates
+   REDIS_URL=redis://localhost:6379/0
+   STORAGE_DIR=./storage/certificates
+   ```
+
+4. **Ensure PostgreSQL & Redis are running**:
+   If you have Docker installed, you can spin up just PostgreSQL and Redis:
+   ```bash
+   docker compose up -d postgres redis
+   ```
+
+5. **Run Alembic migrations**:
+   ```bash
+   alembic upgrade head
+   ```
+
+---
+
+## 🏃 Running the Application
+
+### 1. Start the FastAPI API Server
 
 ```bash
-python -m venv .venv
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Activate it and install dependencies:
+Once started, access:
+- **Interactive Swagger Documentation**: [http://localhost:8000/docs](http://localhost:8000/docs)
+- **ReDoc Documentation**: [http://localhost:8000/redoc](http://localhost:8000/redoc)
+- **Root API Info**: [http://localhost:8000/](http://localhost:8000/)
+
+### 2. Start the Celery Worker
+
+In a separate terminal window (with the virtual environment activated):
 
 ```bash
-pip install -r requirements.txt
+celery -A app.workers.celery_app.celery_app worker --loglevel=info
 ```
 
-Copy `.env.example` to `.env`, then start PostgreSQL and Redis.
+---
 
-Run API:
+## 🗄 Database Migrations
 
-```bash
-uvicorn app.main:app --reload
-```
+Database schemas are managed with **Alembic**.
 
-Run tests:
+- **Apply all migrations**:
+  ```bash
+  alembic upgrade head
+  ```
+  *(Or via Docker: `docker compose run --rm api alembic upgrade head`)*
+
+- **Create a new migration after model changes**:
+  ```bash
+  alembic revision --autogenerate -m "describe schema changes"
+  ```
+
+- **Rollback the last migration**:
+  ```bash
+  alembic downgrade -1
+  ```
+
+---
+
+## 🧪 Running Tests
+
+The test suite is fully automated using **Pytest**. 
+
+It uses an in-memory SQLite database fixture (`sqlite://` with `StaticPool`) configured in `tests/conftest.py`, meaning **tests run completely independently and do not require running PostgreSQL or Redis instances**.
+
+### Run all tests
 
 ```bash
 pytest
+```
 
-## Phase 2: Database
-
-Apply the initial migration after PostgreSQL is running:
+### Run tests with verbose output
 
 ```bash
-docker compose run --rm api alembic upgrade head
+pytest -v
 ```
 
-The initial schema contains:
+### Run a specific test file
 
-- `generation_jobs`
-- `certificates`
-
-A generation job has many certificate records. Individual certificate failures are stored independently so one failure does not stop the rest of the batch.
-
-Idempotency is represented by a unique `idempotency_key` on `generation_jobs`.
-
-## Phase 3: Create a Generation Job
-
-Create a job:
-
-```http
-POST /api/v1/jobs
+```bash
+pytest tests/test_jobs_api.py -v
+pytest tests/test_failure_handling.py -v
+pytest tests/test_worker_safety.py -v
+pytest tests/test_retry_api.py -v
 ```
 
-Optional idempotency header:
+### What the test suite verifies:
+- **Job Creation & Validation**: Schema validation, email sanitization, and batch bounds.
+- **Idempotency**: Repeated requests with the same `Idempotency-Key` return the existing job without creating duplicates.
+- **Failure Isolation**: An error generating one certificate does not crash the Celery worker or abort remaining certificates.
+- **Worker Safety / Concurrency**: Atomic claiming ensures only one worker processes a given certificate.
+- **Certificate Downloads & Access Control**: Verification that completed PDFs can be downloaded, while pending or failed certificates return HTTP `409 Conflict`.
+- **Granular Retries**: Only failed certificates can be reset and queued for retry.
+- **Health & Readiness Endpoints**: Validates database and cache connectivity probes.
 
-```http
-Idempotency-Key: unique-client-request-id
-```
+---
 
-Example request:
+## 📨 How to Submit a Certificate Generation Request
+
+Submit a batch of certificate recipients to the `/api/v1/jobs` endpoint.
+
+### Endpoint Details
+
+- **Method**: `POST`
+- **Path**: `/api/v1/jobs`
+- **Headers**:
+  - `Content-Type: application/json`
+  - `Idempotency-Key: <unique-string>` *(Recommended — prevents duplicate submissions on network retries)*
+
+### Request Body Format
 
 ```json
 {
-  "event_name": "Python Workshop 2026",
-  "certificate_title": "Certificate of Participation",
+  "event_name": "Modern Cloud Architecture Summit 2026",
+  "certificate_title": "Certificate of Completion",
   "recipients": [
     {
-      "name": "Tanmay Bhadauria",
-      "email": "tanmay@example.com"
+      "name": "Jane Doe",
+      "email": "jane.doe@example.com"
     },
     {
-      "name": "Rahul Sharma",
-      "email": "rahul@example.com"
+      "name": "John Smith",
+      "email": "john.smith@example.com"
+    },
+    {
+      "name": "Alex Johnson",
+      "email": "alex.j@example.com"
     }
   ]
 }
 ```
 
-The API validates all recipient data using Pydantic. A valid request creates one `generation_jobs` row and one `certificates` row per recipient.
-
-If the same `Idempotency-Key` is submitted again, the existing job is returned instead of creating another batch.
-
-## Phase 4: Background Certificate Generation
-
-A successful job is queued to Celery after the database transaction commits.
-
-The worker:
-
-1. Moves the job to `PROCESSING`.
-2. Processes each pending certificate independently.
-3. Generates a PDF using the predefined ReportLab template.
-4. Stores the generated file under `storage/certificates/<job_id>/`.
-5. Marks each certificate as `SUCCESS` or `FAILED`.
-6. Updates processed/success/failed counters.
-7. Marks the overall job as `COMPLETED`, `FAILED`, or `COMPLETED_WITH_ERRORS`.
-
-A failure for one certificate is caught and recorded without stopping the remaining certificates.
-
-## Phase 5: Certificate Retrieval
-
-List all certificate results for a job:
-
-```http
-GET /api/v1/jobs/{job_id}/certificates
-```
-
-Download an individual successful certificate:
-
-```http
-GET /api/v1/certificates/{certificate_id}
-```
-
-Only certificates with `SUCCESS` status and an existing PDF file can be downloaded. Failed or still-processing certificates return an appropriate error response.
-
-## Phase 6: Test Suite
-
-The test suite now covers:
-
-- Job creation
-- Request validation
-- Idempotent job retries
-- Job status/progress
-- Missing jobs
-- PDF generation
-- Individual certificate failure isolation
-- Certificate listing
-- Successful PDF download
-- Failed certificate download protection
-- Missing certificate handling
-
-Run:
+### Example `curl` Command
 
 ```bash
-pytest -q
-```
-
-The API tests use an isolated SQLite database for speed and do not require a running PostgreSQL instance.
-
-## Phase 7: Worker Safety and Retry Design
-
-### Duplicate processing protection
-
-Before processing a certificate, a worker atomically changes:
-
-```text
-PENDING -> PROCESSING
-```
-
-using a conditional database update.
-
-Only the worker that successfully changes one row is allowed to generate that certificate. A second worker attempting to claim the same certificate gets zero updated rows and skips it.
-
-This protects against duplicate processing if the same Celery job is accidentally delivered more than once.
-
-### Individual certificate retry
-
-A failed certificate can be reset:
-
-```text
-FAILED -> PENDING
-```
-
-Successful certificates are never reset, so a retry only regenerates failed work.
-
-The retry boundary is deliberately at the individual certificate level rather than rerunning the entire bulk job.
-
-## Phase 8: Retry and Health APIs
-
-Retry a failed certificate:
-
-```http
-POST /api/v1/certificates/{certificate_id}/retry
-```
-
-Only `FAILED` certificates can be retried. The API resets that certificate to `PENDING` and queues the existing generation job. Successful certificates are not regenerated.
-
-### Health
-
-Liveness:
-
-```http
-GET /health
-```
-
-Readiness:
-
-```http
-GET /health/ready
-```
-
-Readiness checks both PostgreSQL and Redis and returns HTTP `503` when either dependency is unavailable.
-
-## Assignment Requirement Checklist
-
-| Requirement | Implementation |
-|---|---|
-| Accept bulk generation request | `POST /api/v1/jobs` |
-| Validate recipient data | Pydantic `RecipientCreate` |
-| Predefined certificate template | ReportLab template |
-| Generate one certificate per recipient | Celery worker |
-| Bulk processing | Redis + Celery |
-| Track generation status | `GenerationJob.status` |
-| Track progress | processed/success/failure counters + percentage |
-| Identify individual failures | `Certificate.status` + `error_message` |
-| One failure must not stop others | Per-certificate exception boundary |
-| Retrieve generated certificates | Certificate listing + PDF download |
-| Retry failed certificates | `POST /api/v1/certificates/{id}/retry` |
-| Idempotent job retries | `Idempotency-Key` + unique DB constraint |
-| Relational database | PostgreSQL |
-| Automated tests | Pytest |
-| Setup/run documentation | This README |
-| Health checks | `/health` and `/health/ready` |
-
-## API Example
-
-### Create a bulk generation job
-
-```bash
-curl -X POST http://localhost:8000/api/v1/jobs   -H "Content-Type: application/json"   -H "Idempotency-Key: workshop-2026-001"   -d '{
-    "event_name": "Python Workshop 2026",
-    "certificate_title": "Certificate of Participation",
+curl -X POST http://localhost:8000/api/v1/jobs \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: summit-2026-batch-01" \
+  -d '{
+    "event_name": "Modern Cloud Architecture Summit 2026",
+    "certificate_title": "Certificate of Completion",
     "recipients": [
       {
-        "name": "Tanmay Bhadauria",
-        "email": "tanmay@example.com"
+        "name": "Jane Doe",
+        "email": "jane.doe@example.com"
       },
       {
-        "name": "Rahul Sharma",
-        "email": "rahul@example.com"
+        "name": "John Smith",
+        "email": "john.smith@example.com"
       }
     ]
   }'
 ```
 
-### Check progress
+### Response (`201 Created`)
 
-```bash
-curl http://localhost:8000/api/v1/jobs/<JOB_ID>
+```json
+{
+  "job_id": "a50fc497-ec23-424d-9bd8-cbf39b8bc14b",
+  "status": "QUEUED",
+  "total": 2,
+  "processed": 0,
+  "successful": 0,
+  "failed": 0,
+  "progress": 0.0,
+  "message": "Certificate generation job created and queued successfully."
+}
 ```
 
-### List certificate results
+---
+
+## 📥 How to Retrieve Generated Certificates
+
+### Step 1: Check Job Status and Progress
+
+Poll the status of the generation job using its `job_id`:
+
+- **Method**: `GET`
+- **Path**: `/api/v1/jobs/{job_id}`
 
 ```bash
-curl http://localhost:8000/api/v1/jobs/<JOB_ID>/certificates
+curl http://localhost:8000/api/v1/jobs/a50fc497-ec23-424d-9bd8-cbf39b8bc14b
 ```
 
-### Download a certificate
+#### Example Response:
+
+```json
+{
+  "job_id": "a50fc497-ec23-424d-9bd8-cbf39b8bc14b",
+  "status": "COMPLETED",
+  "total": 2,
+  "processed": 2,
+  "successful": 2,
+  "failed": 0,
+  "progress": 100.0,
+  "message": "Generation job status retrieved successfully."
+}
+```
+
+#### Possible Job Statuses:
+- `QUEUED`: Job is created and waiting in Redis queue.
+- `PROCESSING`: Celery worker is currently generating certificates.
+- `COMPLETED`: All certificates were generated successfully.
+- `COMPLETED_WITH_ERRORS`: Job finished, but one or more certificates failed.
+- `FAILED`: All certificates in the job failed.
+
+---
+
+### Step 2: List All Certificates for a Job
+
+Retrieve metadata and individual IDs for each certificate in a job:
+
+- **Method**: `GET`
+- **Path**: `/api/v1/jobs/{job_id}/certificates`
 
 ```bash
-curl -o certificate.pdf   http://localhost:8000/api/v1/certificates/<CERTIFICATE_ID>
+curl http://localhost:8000/api/v1/jobs/a50fc497-ec23-424d-9bd8-cbf39b8bc14b/certificates
 ```
 
-### Retry one failed certificate
+#### Example Response:
+
+```json
+[
+  {
+    "certificate_id": "8bb3e935-7ce3-4bb4-a8fe-fb903b41e860",
+    "job_id": "a50fc497-ec23-424d-9bd8-cbf39b8bc14b",
+    "recipient_name": "Jane Doe",
+    "recipient_email": "jane.doe@example.com",
+    "status": "SUCCESS",
+    "file_path": "/app/storage/a50fc497-ec23-424d-9bd8-cbf39b8bc14b/8bb3e935-7ce3-4bb4-a8fe-fb903b41e860.pdf",
+    "error_message": null,
+    "created_at": "2026-10-07T12:00:00Z",
+    "completed_at": "2026-10-07T12:00:01Z"
+  },
+  {
+    "certificate_id": "2d94cfbc-418a-4467-bc18-2e389d49487c",
+    "job_id": "a50fc497-ec23-424d-9bd8-cbf39b8bc14b",
+    "recipient_name": "John Smith",
+    "recipient_email": "john.smith@example.com",
+    "status": "SUCCESS",
+    "file_path": "/app/storage/a50fc497-ec23-424d-9bd8-cbf39b8bc14b/2d94cfbc-418a-4467-bc18-2e389d49487c.pdf",
+    "error_message": null,
+    "created_at": "2026-10-07T12:00:00Z",
+    "completed_at": "2026-10-07T12:00:01Z"
+  }
+]
+```
+
+---
+
+### Step 3: Download a Certificate PDF
+
+Download the binary PDF file using the `certificate_id`:
+
+- **Method**: `GET`
+- **Path**: `/api/v1/certificates/{certificate_id}`
 
 ```bash
-curl -X POST   http://localhost:8000/api/v1/certificates/<CERTIFICATE_ID>/retry
+curl -o certificate.pdf http://localhost:8000/api/v1/certificates/8bb3e935-7ce3-4bb4-a8fe-fb903b41e860
 ```
 
-## Architecture Decisions
+> **Note**: If a certificate is still `PENDING`, `PROCESSING`, or `FAILED`, the API returns HTTP `409 Conflict` preventing partial or corrupted downloads.
 
-### Why asynchronous processing?
+---
 
-Certificate generation is CPU/file-work that can become expensive for large batches. The API creates the job and returns immediately while Celery workers process certificates asynchronously.
+## 🔄 How to Retry Failed Certificates
 
-### Why PostgreSQL?
+If a certificate failed during generation (e.g. temporary filesystem IO error), you can trigger a retry specifically for that certificate without re-running the successful certificates in the batch.
 
-The assignment requires a relational database. PostgreSQL provides transactions, constraints, UUIDs, indexes, and reliable persistence for job/certificate state.
+- **Method**: `POST`
+- **Path**: `/api/v1/certificates/{certificate_id}/retry`
 
-### Why Redis + Celery?
+```bash
+curl -X POST http://localhost:8000/api/v1/certificates/2d94cfbc-418a-4467-bc18-2e389d49487c/retry
+```
 
-Redis acts as the broker and Celery provides durable worker-based task processing. This avoids keeping an HTTP request open for the entire bulk operation and allows worker scaling.
+### Response (`200 OK`)
 
-### Why store PDFs outside PostgreSQL?
+```json
+{
+  "certificate_id": "2d94cfbc-418a-4467-bc18-2e389d49487c",
+  "job_id": "a50fc497-ec23-424d-9bd8-cbf39b8bc14b",
+  "recipient_name": "John Smith",
+  "recipient_email": "john.smith@example.com",
+  "status": "PENDING",
+  "file_path": null,
+  "error_message": null,
+  "created_at": "2026-10-07T12:00:00Z",
+  "completed_at": null
+}
+```
 
-The relational database stores metadata and state. PDF files are stored separately under the configured storage directory. In production, the same storage interface can be backed by object storage such as S3.
+The certificate status is reset to `PENDING`, failure counters are adjusted, and the Celery worker task is re-queued.
 
-### Why per-certificate state?
+---
 
-A bulk job can partially succeed. Storing status independently for each recipient allows successful certificates to remain available even when other certificates fail.
+## 🩺 Health & Readiness Probes
 
-### Failure isolation
+The application provides two dedicated monitoring endpoints for Kubernetes, Docker, or external uptime checkers:
 
-Each certificate has its own processing boundary. A generation exception is recorded on that certificate and the worker continues with the remaining batch.
+### 1. Liveness Probe (`GET /health`)
+Verifies the FastAPI web server is alive and responding.
 
-### Idempotency
+```bash
+curl http://localhost:8000/health
+# Response: {"status": "ok"} (HTTP 200)
+```
 
-Clients can provide `Idempotency-Key`. The key is unique in PostgreSQL, so network retries do not create duplicate generation jobs.
+### 2. Readiness Probe (`GET /health/ready`)
+Actively verifies database (PostgreSQL) and cache/broker (Redis) connections.
 
-### Duplicate worker protection
+```bash
+curl http://localhost:8000/health/ready
+```
 
-Before generation, a worker atomically changes `PENDING` to `PROCESSING`. Only the worker that successfully performs this conditional update processes the certificate.
+- **HTTP 200 (Ready)**:
+  ```json
+  {
+    "status": "ready",
+    "dependencies": {
+      "database": "ok",
+      "redis": "ok"
+    }
+  }
+  ```
+- **HTTP 503 (Not Ready)**:
+  Returned if either PostgreSQL or Redis is unreachable.
 
-## Production Storage Evolution
+---
 
-The current assignment uses local filesystem storage for simplicity:
+## 🧠 Important Implementation & Design Decisions
+
+### 1. Asynchronous Architecture & Decoupling (Celery + Redis)
+- **Problem**: Generating hundreds or thousands of PDF documents involves significant CPU and file I/O operations. Running this synchronously within an HTTP request causes connection timeouts and degrades API responsiveness.
+- **Solution**: The API accepts the batch payload, persists the job and certificate records in a single database transaction, dispatches a Celery task with the `job_id`, and immediately returns HTTP `201 Created`. Celery workers execute the PDF rendering in the background.
+
+### 2. Relational Integrity & Schema Design (PostgreSQL + SQLAlchemy)
+- **Two-tier Model**: A parent `generation_jobs` table holds batch metadata and aggregate progress counters (`total_count`, `processed_count`, `successful_count`, `failed_count`), while a child `certificates` table tracks individual recipient records.
+- **Foreign Key Cascades**: Certificates reference `job_id` with `ondelete="CASCADE"`.
+- **UUID Primary Keys**: Prevents sequential ID enumeration attacks and facilitates distributed scaling.
+
+### 3. Per-Certificate Failure Isolation & Partial Success Handling
+- **Problem**: In bulk operations, an unexpected failure (e.g. special character rendering fault, disk glitch) should not invalidate or halt the rest of the batch.
+- **Solution**: Each certificate is processed inside its own isolated `try...except` block in `app/workers/tasks.py`. If rendering fails, the exception is logged to `certificates.error_message`, the status is set to `FAILED`, and the worker continues with the next recipient. The parent job status accurately reflects the aggregate outcome (`COMPLETED_WITH_ERRORS`).
+
+### 4. Atomic Worker Claiming & Concurrency Protection
+- **Problem**: In distributed systems, Celery guarantees *at-least-once* message delivery. If duplicate task messages are delivered or multiple workers process the same queue, two workers might generate the same certificate concurrently.
+- **Solution**: Before generating a certificate, workers perform an atomic conditional database update:
+  ```sql
+  UPDATE certificates 
+  SET status = 'PROCESSING' 
+  WHERE id = :certificate_id AND status = 'PENDING';
+  ```
+  Only the worker whose query returns `rowcount == 1` acquires permission to generate that certificate. Any duplicate attempt gets `rowcount == 0` and skips it.
+
+### 5. Client-Side Idempotency (`Idempotency-Key`)
+- Clients can provide a unique `Idempotency-Key` header. The database enforces a unique constraint on `generation_jobs.idempotency_key`.
+- If a client experiences a network timeout and retries the exact same request, the API detects the existing key and returns the original job status rather than queuing duplicate batches.
+
+### 6. Granular, Certificate-Level Retries
+- Rather than restarting an entire bulk job of 1,000 certificates when only 2 failed, the system provides a granular retry endpoint (`POST /api/v1/certificates/{id}/retry`).
+- Only `FAILED` certificates can be reset to `PENDING`. Successful certificates are immutable, avoiding wasted CPU cycles and duplicate files.
+
+### 7. Decoupled File Storage vs Database Blobs
+- Generated PDF files are written to structured directory paths (`storage/certificates/<job_id>/<certificate_id>.pdf`) instead of storing large binary data in PostgreSQL.
+- This design keeps the relational database lean and enables an easy transition to Amazon S3, Google Cloud Storage, or MinIO in production environments without changing the data model.
+
+### 8. Transactional Consistency Before Enqueueing
+- In `app/api/routes/jobs.py`, the Celery task (`process_generation_job.delay(...)`) is triggered **only after** `db.commit()` has successfully persisted the job and all child certificates. This prevents race conditions where workers attempt to process a job before it exists in the database.
+
+---
+
+## 📁 Project Structure
 
 ```text
-storage/certificates/<job_id>/<certificate_id>.pdf
+bulk-certificate-generator/
+├── alembic/                      # Alembic database migration scripts
+│   ├── versions/                 # Schema migration version files
+│   │   └── 0001_initial.py       # Initial schema creation
+│   └── env.py                    # Alembic environment configuration
+├── app/                          # Core application package
+│   ├── api/                      # API routing and controllers
+│   │   └── routes/
+│   │       ├── certificates.py   # Certificate listing, download, retry routes
+│   │       ├── health.py         # Liveness and readiness endpoints
+│   │       └── jobs.py           # Job submission and status tracking
+│   ├── core/                     # Application configurations and database session
+│   │   ├── config.py             # Pydantic BaseSettings environment loader
+│   │   ├── database.py           # SQLAlchemy Engine, Base, and SessionLocal
+│   │   └── health.py             # Database connectivity checker
+│   ├── models/                   # SQLAlchemy ORM database models
+│   │   ├── certificate.py        # Certificate table model and status enum
+│   │   └── generation_job.py     # GenerationJob table model and status enum
+│   ├── schemas/                  # Pydantic request/response schemas
+│   │   ├── certificate.py        # Certificate response schemas
+│   │   └── job.py                # Job creation and response schemas
+│   ├── services/                 # Business logic and external service integrations
+│   │   ├── certificate_service.py # ReportLab PDF canvas rendering
+│   │   ├── job_service.py        # Job creation and DB lookup helpers
+│   │   └── storage_service.py    # Local file path and directory management
+│   ├── workers/                  # Celery worker configuration and task definitions
+│   │   ├── celery_app.py         # Celery instance configuration
+│   │   ├── retry.py              # Failed certificate reset logic
+│   │   └── tasks.py              # Background worker tasks and atomic claiming
+│   └── main.py                   # FastAPI application entrypoint
+├── storage/                      # Directory for generated PDF certificates
+├── tests/                        # Automated Pytest suite (Isolated SQLite)
+│   ├── conftest.py               # Fixtures, in-memory DB engine, and TestClient
+│   ├── test_certificates_api.py  # Tests for certificate routes and file downloads
+│   ├── test_failure_handling.py  # Tests for per-certificate failure isolation
+│   ├── test_generation_service.py# Tests for ReportLab PDF generation
+│   ├── test_health.py            # Tests for health & readiness endpoints
+│   ├── test_job_schema.py        # Tests for job request/response schema parsing
+│   ├── test_jobs_api.py          # Tests for job submission and status API
+│   ├── test_retry.py             # Tests for certificate retry state resets
+│   ├── test_retry_api.py         # Tests for retry API endpoint
+│   ├── test_validation.py        # Tests for Pydantic input validation
+│   └── test_worker_safety.py     # Tests for atomic worker claim mechanism
+├── .env                          # Local environment variable configuration
+├── .env.example                  # Example environment variables template
+├── .gitignore                    # Git ignore file
+├── alembic.ini                   # Alembic configuration
+├── docker-compose.yml            # Multi-container Docker Compose definition
+├── Dockerfile                    # Docker build instructions for API and worker
+├── requirements.txt              # Python package dependencies
+└── README.md                     # Project documentation
 ```
 
-For production deployment, the storage service can be replaced with an S3-compatible object store. The database would continue to store the object key rather than the PDF binary.
+---
 
-## Running
+## ⚙️ Environment Configuration Reference
 
-Start the stack:
+The application is configured using environment variables loaded via Pydantic `BaseSettings`:
 
-```bash
-docker compose up --build -d
-```
+| Variable | Default Value | Description |
+|---|---|---|
+| `DATABASE_URL` / `DB_URL` | `postgresql+psycopg://postgres:postgres@localhost:5432/certificates` | PostgreSQL connection string |
+| `REDIS_URL` | `redis://localhost:6379/0` | Redis broker and backend URL |
+| `STORAGE_DIR` | `storage/certificates` | Local directory path where generated certificate PDFs are saved |
 
-Apply migrations:
+---
 
-```bash
-docker compose run --rm api alembic upgrade head
-```
+## 📄 License
 
-Open Swagger:
-
-```text
-http://localhost:8000/docs
-```
-
-Run tests:
-
-```bash
-pytest -q
-```
+This project is licensed under the MIT License.
