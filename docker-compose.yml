@@ -1,0 +1,59 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: certificate-postgres
+    environment:
+      POSTGRES_DB: certificates
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d certificates"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: certificate-redis
+    ports:
+      - "6379:6379"
+
+  api:
+    build: .
+    container_name: certificate-api
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/certificates
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_DIR: /app/storage/certificates
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  worker:
+    build: .
+    container_name: certificate-worker
+    command: celery -A app.workers.celery_app.celery_app worker --loglevel=info
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/certificates
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_DIR: /app/storage/certificates
+    volumes:
+      - ./storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+volumes:
+  postgres_data:
