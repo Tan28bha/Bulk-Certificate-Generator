@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.env
+.idea/
+.vscode/
+storage/certificates/*
+!storage/certificates/.gitkeep
+alembic/versions/*
