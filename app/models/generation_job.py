@@ -2,8 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, Integer, String, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import DateTime, Enum, Integer, String, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -21,7 +20,7 @@ class GenerationJob(Base):
     __tablename__ = "generation_jobs"
 
     id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+        Uuid, primary_key=True, default=uuid.uuid4
     )
     event_name: Mapped[str] = mapped_column(String(255), nullable=False)
     certificate_title: Mapped[str] = mapped_column(String(255), nullable=False)
