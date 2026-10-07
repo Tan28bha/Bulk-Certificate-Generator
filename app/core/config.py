@@ -4,6 +4,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    app_name: str = "Bulk Certificate Generator"
+    app_version: str = "1.0.0"
+
     database_url: str = Field(
         default="postgresql+psycopg://postgres:postgres@localhost:5432/certificates",
         validation_alias=AliasChoices("DATABASE_URL", "DB_URL", "database_url", "db_url"),
@@ -31,6 +34,7 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_file=".env",
+        env_file_encoding="utf-8",
         extra="ignore",
     )
 

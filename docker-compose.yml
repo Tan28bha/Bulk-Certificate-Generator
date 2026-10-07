@@ -40,6 +40,7 @@ services:
       - "8000:8000"
     environment:
       DB_URL: postgresql+psycopg://postgres:postgres@postgres:5432/certificates
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/certificates
       REDIS_URL: redis://redis:6379/0
       STORAGE_DIR: /app/storage
     depends_on:
@@ -59,6 +60,7 @@ services:
     command: celery -A app.workers.celery_app.celery_app worker --loglevel=info
     environment:
       DB_URL: postgresql+psycopg://postgres:postgres@postgres:5432/certificates
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/certificates
       REDIS_URL: redis://redis:6379/0
       STORAGE_DIR: /app/storage
     depends_on:

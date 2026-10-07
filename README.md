@@ -66,7 +66,6 @@ Run tests:
 
 ```bash
 pytest
-```
 
 ## Phase 2: Database
 

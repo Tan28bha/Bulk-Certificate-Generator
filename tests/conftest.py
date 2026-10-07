@@ -11,7 +11,7 @@ from app.main import app
 
 
 @pytest.fixture
-def db_session():
+def db_session(monkeypatch):
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -24,6 +24,9 @@ def db_session():
         autoflush=False,
         autocommit=False,
     )
+
+    monkeypatch.setattr("app.core.database.SessionLocal", SessionTesting)
+    monkeypatch.setattr("app.workers.tasks.SessionLocal", SessionTesting)
 
     db = SessionTesting()
 

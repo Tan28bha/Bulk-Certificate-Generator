@@ -30,5 +30,6 @@ def get_db() -> Generator[Session, None, None]:
     finally:
         db.close()
 
+
 # Import models so SQLAlchemy metadata includes all tables.
 import app.models  # noqa: E402,F401

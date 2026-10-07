@@ -1,3 +1,4 @@
+# pyrefly: ignore [missing-import]
 from celery import Celery
 
 from app.core.config import get_settings
@@ -8,6 +9,7 @@ celery_app = Celery(
     "certificate_generator",
     broker=settings.redis_url,
     backend=settings.redis_url,
+    include=["app.workers.tasks"],
 )
 
 celery_app.conf.update(
